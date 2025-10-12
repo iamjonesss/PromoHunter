@@ -1,0 +1,21 @@
+# Ignore build directories
+/build/
+/dist/
+/.mypy_cache
+/.venv
+/venv
+
+# Ignore log files
+*.log
+
+# Ignore temporary files
+*.tmp
+temp/
+
+# Ignore IDE-specific files
+.idea/
+.vscode/
+
+# Ignore operating system files
+.DS_Store
+Thumbs.db
