@@ -4,6 +4,7 @@
 /.mypy_cache
 /.venv
 /venv
+__pycache__/
 
 # Ignore log files
 *.log
