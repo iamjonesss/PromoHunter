@@ -1,8 +1,10 @@
+import asyncio
 from typing import Optional, Dict, Any, List
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from interfaces.chatbot import ChatbotInterface
 from config.logger import BotLogger
+from services.product_search import ProductSearchService
 
 class TelegramBot(ChatbotInterface):
     """Implementação concreta da interface ChatbotInterface para o Telegram.
@@ -23,6 +25,7 @@ class TelegramBot(ChatbotInterface):
         self.application = Application.builder().token(self.token).build()
         self.is_running = False
         self.received_messages: List[Dict[str, Any]] = []
+        self.product_search = ProductSearchService()
         
         # Configurar handlers
         self._setup_handlers()
@@ -38,6 +41,10 @@ class TelegramBot(ChatbotInterface):
         # Handler para o comando /help
         help_handler = CommandHandler('help', self._help_command)
         self.application.add_handler(help_handler)
+        
+        # Handler para o comando /buscar
+        search_handler = CommandHandler('buscar', self._search_command)
+        self.application.add_handler(search_handler)
         
         # Handler para mensagens de texto
         message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
@@ -60,13 +67,32 @@ class TelegramBot(ChatbotInterface):
         help_message = (
             "🔍 **Comandos Disponíveis:**\n\n"
             "/start - Iniciar o bot\n"
-            "/help - Mostrar esta mensagem de ajuda\n\n"
-            "**Como usar:**\n"
-            "Simplesmente envie uma mensagem descrevendo o produto que você está "
-            "procurando e eu te ajudarei a encontrar as melhores opções!"
+            "/help - Mostrar esta mensagem de ajuda\n"
+            "/buscar <produto> - Buscar produto nas lojas\n\n"
+            "**Exemplos de uso:**\n"
+            "/buscar smartphone\n"
+            "/buscar notebook gamer\n"
+            "/buscar placa de video\n\n"
+            "**Ou simplesmente digite:**\n"
+            "Procuro um smartphone bom e barato\n\n"
+            "🤖 Eu vou buscar nas melhores lojas e te mostrar as melhores ofertas!"
         )
         await update.message.reply_text(help_message, parse_mode='Markdown')
         self.logger.info(f"Help command executed for user {update.effective_user.id}")
+    
+    async def _search_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler para o comando /buscar."""
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Por favor, informe o produto que deseja buscar!\n\n"
+                "**Exemplo:** /buscar smartphone\n"
+                "**Ou:** /buscar notebook gamer"
+            )
+            return
+        
+        # Juntar argumentos para formar o termo de busca
+        termo_busca = " ".join(context.args)
+        await self._process_search(update, termo_busca)
     
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler para mensagens de texto regulares."""
@@ -80,15 +106,77 @@ class TelegramBot(ChatbotInterface):
         
         self.received_messages.append(message_data)
         
-        # Resposta temporária até a integração com o sistema de recomendação
-        response = (
-            f"Recebi sua mensagem: '{update.message.text}'\n\n"
-            "🔄 Estou processando sua solicitação e em breve terei "
-            "recomendações personalizadas para você!"
+        # Processar mensagem como busca de produto
+        await self._process_search(update, update.message.text)
+        
+        self.logger.info(f"Message received from user {update.effective_user.id}: {update.message.text}")
+    
+    async def _process_search(self, update: Update, termo_busca: str):
+        """Processa a busca de produtos e envia os resultados."""
+        chat_id = update.effective_chat.id
+        
+        # Enviar mensagem de "digitando..."
+        await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
+        # Mensagem de início da busca
+        await update.message.reply_text(
+            f"🔍 Buscando '{termo_busca}' nas melhores lojas...\n"
+            "⏳ Aguarde um momento, estou comparando preços!"
         )
         
-        await update.message.reply_text(response)
-        self.logger.info(f"Message received from user {update.effective_user.id}: {update.message.text}")
+        try:
+            # Realizar busca
+            resultados = await self.product_search.search_products(termo_busca)
+            
+            # Encontrar melhores produtos
+            melhores_produtos = self.product_search.find_best_products(
+                resultados['all_products'], 
+                criterio='melhor_custo_beneficio'
+            )
+            
+            if not melhores_produtos:
+                await update.message.reply_text(
+                    self.product_search.format_summary_message(resultados, [])
+                )
+                return
+            
+            # Enviar resumo
+            summary = self.product_search.format_summary_message(resultados, melhores_produtos)
+            await update.message.reply_text(summary, parse_mode='Markdown')
+            
+            # Enviar comparação (se houver mais de um produto)
+            if len(melhores_produtos) > 1:
+                comparison = self.product_search.create_comparison_message(melhores_produtos)
+                if comparison:
+                    await update.message.reply_text(comparison, parse_mode='Markdown')
+            
+            # Enviar cada produto
+            for i, produto in enumerate(melhores_produtos, 1):
+                product_message = self.product_search.format_product_message(produto, i)
+                await update.message.reply_text(product_message, parse_mode='Markdown')
+                
+                # Pequena pausa entre mensagens para não sobrecarregar
+                if i < len(melhores_produtos):
+                    await asyncio.sleep(0.5)
+            
+            # Mensagem final
+            final_message = (
+                "✨ **Busca concluída!**\n\n"
+                "💡 **Dicas:**\n"
+                "• Use /buscar para nova busca\n"
+                "• Digite o nome de outro produto\n"
+                "• Considere avaliações e garantia além do preço\n\n"
+                "📞 Quer ajuda? Digite /help"
+            )
+            await update.message.reply_text(final_message, parse_mode='Markdown')
+            
+        except Exception as e:
+            self.logger.error(f"Erro durante busca: {e}")
+            await update.message.reply_text(
+                "❌ Ops! Ocorreu um erro durante a busca.\n"
+                "🔄 Tente novamente em alguns instantes ou com outro termo.\n\n"
+                "Se o problema persistir, digite /help para mais informações."
+            )
     
     async def send_message(self, chat_id: int, text: str, parse_mode: Optional[str] = None) -> bool:
         """Envia uma mensagem para o chat especificado.
